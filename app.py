@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta, date
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from google.api_core.exceptions import FailedPrecondition, ResourceExhausted
+from google.api_core.exceptions import FailedPrecondition
 
 # (학급 확장용) PDF 텍스트 파싱(간단)
 import re
@@ -1412,32 +1412,24 @@ def api_list_accounts_cached():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def api_list_templates_cached():
+    docs = db.collection("templates").stream()
     templates = []
-    try:
-        # 필요한 필드만 조회해 Firestore 응답 크기를 줄인다.
-        docs = db.collection("templates").select(["label", "category", "base_label", "kind", "amount", "order"]).stream()
-        for d in docs:
-            t = d.to_dict() or {}
-            if t.get("label"):
-                templates.append(
-                    {
-                        "template_id": d.id,
-                        # label에는 화면에 보여줄 문자열(※ 구분이 있으면 "[구분] ..." 형태 포함)
-                        "label": t.get("label"),
-                        # 선택적으로 별도 저장해둔 값(없으면 label에서 파싱해서 사용)
-                        "category": str(t.get("category", "") or ""),
-                        "base_label": str(t.get("base_label", "") or ""),
-                        "kind": t.get("kind"),
-                        "amount": int(t.get("amount", 0) or 0),
-                        "order": int(t.get("order", 999999) or 999999),
-                    }
-                )
-    except ResourceExhausted:
-        # 할당량/응답 한도 이슈 시 앱이 죽지 않도록 빈 목록으로 폴백
-        return {"ok": False, "templates": [], "error": "templates query resource exhausted"}
-    except Exception as e:
-        return {"ok": False, "templates": [], "error": str(e)}
-        
+    for d in docs:
+        t = d.to_dict() or {}
+        if t.get("label"):
+            templates.append(
+                {
+                    "template_id": d.id,
+                    # label에는 화면에 보여줄 문자열(※ 구분이 있으면 "[구분] ..." 형태 포함)
+                    "label": t.get("label"),
+                    # 선택적으로 별도 저장해둔 값(없으면 label에서 파싱해서 사용)
+                    "category": str(t.get("category", "") or ""),
+                    "base_label": str(t.get("base_label", "") or ""),
+                    "kind": t.get("kind"),
+                    "amount": int(t.get("amount", 0) or 0),
+                    "order": int(t.get("order", 999999) or 999999),
+                }
+            )
     templates.sort(key=lambda x: (int(x.get("order", 999999)), str(x.get("label", ""))))
     return {"ok": True, "templates": templates}
 # =========================
