@@ -1457,6 +1457,92 @@ def _compose_template_label(base_label: str, category: str):
     return base_label
 
 
+def _df_to_excel_bytes(df: pd.DataFrame, sheet_name: str) -> bytes:
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+    bio.seek(0)
+    return bio.getvalue()
+
+
+def _build_current_common_template_df() -> pd.DataFrame:
+    tpl_res = api_list_templates_cached()
+    templates = tpl_res.get("templates", []) if tpl_res.get("ok") else []
+
+    rows = []
+    kind_map = {"deposit": "입금", "withdraw": "출금"}
+    for t in templates:
+        parsed_cat, parsed_base = _parse_template_label(str(t.get("label", "") or ""))
+        category = str(t.get("category", "") or "").strip() or parsed_cat or "없음"
+        base_label = str(t.get("base_label", "") or "").strip() or parsed_base
+        rows.append(
+            {
+                "내역이름": base_label,
+                "구분": category,
+                "종류": kind_map.get(str(t.get("kind", "") or "").strip(), "입금"),
+                "금액": int(t.get("amount", 0) or 0),
+                "순서": int(t.get("order", 999999) or 999999),
+            }
+        )
+
+    df = pd.DataFrame(rows, columns=["내역이름", "구분", "종류", "금액", "순서"])
+    if not df.empty:
+        df = df.sort_values(["순서", "내역이름"]).reset_index(drop=True)
+    return df
+
+
+def _build_current_job_template_df() -> pd.DataFrame:
+    rows = []
+    for d in db.collection("job_salary").stream():
+        x = d.to_dict() or {}
+        rows.append(
+            {
+                "순": int(x.get("order", 999999) or 999999),
+                "직업": str(x.get("job", "") or "").strip(),
+                "월급": int(x.get("salary", 0) or 0),
+                "배정 수": int(x.get("student_count", x.get("student_cnt", 1)) or 1),
+            }
+        )
+    df = pd.DataFrame(rows, columns=["순", "직업", "월급", "배정 수"])
+    if not df.empty:
+        df = df[df["직업"].astype(str).str.len() > 0]
+        df = df.sort_values(["순", "직업"]).reset_index(drop=True)
+    return df
+
+
+def _build_current_treasury_template_df() -> pd.DataFrame:
+    tpls = api_list_treasury_templates_cached().get("templates", [])
+    kind_map = {"income": "세입", "expense": "세출"}
+    rows = [
+        {
+            "라벨(내역)": str(t.get("label", "") or "").strip(),
+            "종류": kind_map.get(str(t.get("kind", "") or "").strip(), "세입"),
+            "금액": int(t.get("amount", 0) or 0),
+            "순서": int(t.get("order", 999999) or 999999),
+        }
+        for t in tpls
+        if str(t.get("label", "") or "").strip()
+    ]
+    df = pd.DataFrame(rows, columns=["라벨(내역)", "종류", "금액", "순서"])
+    if not df.empty:
+        df = df.sort_values(["순서", "라벨(내역)"]).reset_index(drop=True)
+    return df
+
+
+def _build_current_mart_template_df() -> pd.DataFrame:
+    rows = api_list_mart_templates().get("rows", [])
+    df = pd.DataFrame(
+        [
+            {"내역": str(r.get("item", "") or "").strip(), "금액": int(r.get("price", 0) or 0), "순서": int(r.get("order", 999999) or 999999)}
+            for r in rows
+            if str(r.get("item", "") or "").strip()
+        ],
+        columns=["내역", "금액", "순서"],
+    )
+    if not df.empty:
+        df = df.sort_values(["순서", "내역"]).reset_index(drop=True)
+    return df
+    
 def api_admin_bulk_deposit(admin_pin: str, amount: int, memo: str):
     """✅ 전체 일괄 지급"""
     if not is_admin_pin(admin_pin):
@@ -7102,19 +7188,25 @@ if "🏦 내 통장" in tabs:
                     columns=["내역이름", "구분", "종류", "금액", "순서"],
                 )
 
-                bio = io.BytesIO()
-                with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-                    sample_df.to_excel(writer, index=False, sheet_name="templates")
-                bio.seek(0)
-
-                st.download_button(
-                    "📄 샘플 엑셀 다운로드",
-                    data=bio.getvalue(),
-                    file_name="템플릿_샘플.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="bank_tpl_sample_xlsx_download",
-                )
+                c_down1, c_down2 = st.columns(2)
+                with c_down1:
+                    st.download_button(
+                        "📄 샘플 엑셀 다운로드",
+                        data=_df_to_excel_bytes(sample_df, "templates"),
+                        file_name="템플릿_샘플.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="bank_tpl_sample_xlsx_download",
+                    )
+                with c_down2:
+                    st.download_button(
+                        "📥 현재 템플릿 엑셀 다운로드",
+                        data=_df_to_excel_bytes(_build_current_common_template_df(), "templates"),
+                        file_name="템플릿_현재내역.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="bank_tpl_current_xlsx_download",
+                    )
 
                 st.caption("• 샘플 형식: 내역이름 | 구분(없음/보상/구입/벌금) | 종류(입금/출금) | 금액 | 순서")
                 st.caption("• 엑셀을 올린 뒤, 아래의 **저장** 버튼을 눌러야 실제 반영됩니다.")
@@ -8074,14 +8166,25 @@ if "admin::🏦 내 통장" in tabs:
                     sample_df.to_excel(writer, index=False, sheet_name="templates")
                 bio.seek(0)
 
-                st.download_button(
-                    "📄 샘플 엑셀 다운로드",
-                    data=bio.getvalue(),
-                    file_name="템플릿_샘플.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="bank_tpl_sample_xlsx_download",
-                )
+                c_down1, c_down2 = st.columns(2)
+                with c_down1:
+                    st.download_button(
+                        "📄 샘플 엑셀 다운로드",
+                        data=bio.getvalue(),
+                        file_name="템플릿_샘플.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="bank_tpl_sample_xlsx_download",
+                    )
+                with c_down2:
+                    st.download_button(
+                        "📥 현재 템플릿 엑셀 다운로드",
+                        data=_df_to_excel_bytes(_build_current_common_template_df(), "templates"),
+                        file_name="템플릿_현재내역.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="bank_tpl_current_xlsx_download_v2",
+                    )
 
                 st.caption("• 샘플 형식: 내역이름 | 구분(없음/보상/구입/벌금) | 종류(입금/출금) | 금액 | 순서")
                 st.caption("• 엑셀을 올린 뒤, 아래의 **저장** 버튼을 눌러야 실제 반영됩니다.")
@@ -10517,14 +10620,64 @@ if "⭐ 권한부여" in tabs:
             for s_name in ("추가탭_목록", "관리자기능_목록"):
                 wb[s_name].sheet_state = "hidden"
 
-        st.download_button(
-            "📄 샘플 엑셀 다운로드",
-            data=perm_bio.getvalue(),
-            file_name="permissions_bulk_sample.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="perm_bulk_sample_down",
+        current_perm_rows = []
+        for r in _list_active_students_full_cached():
+            try:
+                no = int(r.get("no", 0) or 0)
+            except Exception:
+                no = 0
+            name = str(r.get("name", "") or "").strip()
+            if no <= 0 or not name:
+                continue
+
+            extra = r.get("extra_permissions", []) or []
+            if not isinstance(extra, list):
+                extra = []
+
+            tab_values = [str(k).replace("tab::", "", 1) for k in extra if isinstance(k, str) and k.startswith("tab::")]
+            admin_values = [str(k).replace("admin::", "", 1) for k in extra if isinstance(k, str) and k.startswith("admin::")]
+
+            admin_disp = []
+            for t in admin_values:
+                if t == "🏦 내 통장":
+                    admin_disp.append("💰입금/출금(관리자)")
+                elif t == "🏦 은행(적금)":
+                    admin_disp.append("🏦 은행(적금)(관리자)")
+                elif t == "📈 투자":
+                    admin_disp.append("📈 투자(관리자)")
+                elif t == "🛒마트":
+                    admin_disp.append("🛒마트(관리자)")
+
+            for v in tab_values:
+                current_perm_rows.append({"번호": no, "이름": name, "추가 탭(tab::)": v, "관리자 기능(admin::)": ""})
+            for v in admin_disp:
+                current_perm_rows.append({"번호": no, "이름": name, "추가 탭(tab::)": "", "관리자 기능(admin::)": v})
+
+        current_perm_df = (
+            pd.DataFrame(current_perm_rows, columns=["번호", "이름", "추가 탭(tab::)", "관리자 기능(admin::)"])
+            if current_perm_rows
+            else pd.DataFrame(columns=["번호", "이름", "추가 탭(tab::)", "관리자 기능(admin::)"])
         )
+
+        c_perm_down1, c_perm_down2 = st.columns(2)
+        with c_perm_down1:
+            st.download_button(
+                "📄 샘플 엑셀 다운로드",
+                data=perm_bio.getvalue(),
+                file_name="permissions_bulk_sample.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="perm_bulk_sample_down",
+            )
+        with c_perm_down2:
+            st.download_button(
+                "📥 현재 템플릿 엑셀 다운로드",
+                data=_df_to_excel_bytes(current_perm_df, "permissions"),
+                file_name="permissions_bulk_current.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="perm_bulk_current_down",
+            )        
 
         perm_up = st.file_uploader("📤 권한 엑셀 업로드(xlsx)", type=["xlsx"], key="perm_bulk_upl")
         overwrite_perm = st.checkbox("저장 시 기존 템플릿 리스트 삭제하고 새로 올린 엑셀로 덮어쓰기", key="perm_bulk_overwrite")
@@ -10651,14 +10804,42 @@ if "👥 계정 정보" in tabs:
         bio = io.BytesIO()
         with pd.ExcelWriter(bio, engine="openpyxl") as writer:
             sample_df.to_excel(writer, index=False, sheet_name="accounts")
-        st.download_button(
-            "📄 샘플 엑셀 다운로드",
-            data=bio.getvalue(),
-            file_name="accounts_sample.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="acc_bulk_sample_down",
+        current_acc_rows = []
+        for r in _list_active_students_full_cached():
+            try:
+                no = int(r.get("no", 0) or 0)
+            except Exception:
+                no = 0
+            name = str(r.get("name", "") or "").strip()
+            pin = str(r.get("pin", "") or "").strip()
+            if no > 0 and name and pin:
+                current_acc_rows.append({"번호": no, "이름": name, "비밀번호": pin})
+
+        current_acc_df = (
+            pd.DataFrame(current_acc_rows, columns=["번호", "이름", "비밀번호"]).sort_values(["번호", "이름"]).reset_index(drop=True)
+            if current_acc_rows
+            else pd.DataFrame(columns=["번호", "이름", "비밀번호"])
         )
+
+        c_acc_down1, c_acc_down2 = st.columns(2)
+        with c_acc_down1:
+            st.download_button(
+                "📄 샘플 엑셀 다운로드",
+                data=bio.getvalue(),
+                file_name="accounts_sample.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="acc_bulk_sample_down",
+            )
+        with c_acc_down2:
+            st.download_button(
+                "📥 현재 템플릿 엑셀 다운로드",
+                data=_df_to_excel_bytes(current_acc_df, "accounts"),
+                file_name="accounts_current.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="acc_bulk_current_down",
+            )
 
         up = st.file_uploader("📤 엑셀 업로드(xlsx)", type=["xlsx"], key="acc_bulk_upl")
 
@@ -11869,19 +12050,25 @@ if "💼 직업/월급" in tabs:
             ],
             columns=["순", "직업", "월급", "배정 수"],
         )
-        bio = io.BytesIO()
-        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-            sample_df.to_excel(writer, index=False, sheet_name="jobs")
-        bio.seek(0)
-
-        st.download_button(
-            "📄 직업 샘플 엑셀 다운로드",
-            data=bio.getvalue(),
-            file_name="jobs_sample.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="job_sample_down",
-        )
+        c_job_down1, c_job_down2 = st.columns(2)
+        with c_job_down1:
+            st.download_button(
+                "📄 직업 샘플 엑셀 다운로드",
+                data=_df_to_excel_bytes(sample_df, "jobs"),
+                file_name="jobs_sample.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="job_sample_down",
+            )
+        with c_job_down2:
+            st.download_button(
+                "📥 현재 템플릿 엑셀 다운로드",
+                data=_df_to_excel_bytes(_build_current_job_template_df(), "jobs"),
+                file_name="jobs_current_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="job_current_template_down",
+            )
 
         # ✅ 기존 목록 삭제 여부(저장 시 적용)
         wipe_before = st.checkbox("⚠️ 저장 시 기존 직업 목록 전체 삭제(덮어쓰기)", value=False, key="job_wipe_before")
@@ -12194,19 +12381,25 @@ if "🏛️ 국세청(국고)" in tabs:
             columns=["라벨(내역)", "종류", "금액", "순서"],
         )
 
-        tre_bio = io.BytesIO()
-        with pd.ExcelWriter(tre_bio, engine="openpyxl") as writer:
-            tre_sample_df.to_excel(writer, index=False, sheet_name="treasury_templates")
-        tre_bio.seek(0)
-
-        st.download_button(
-            "📄 국고 템플릿 샘플 엑셀 다운로드",
-            data=tre_bio.getvalue(),
-            file_name="국고_템플릿_샘플.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="tre_tpl_sample_xlsx_download",
-        )
+        c_tre_down1, c_tre_down2 = st.columns(2)
+        with c_tre_down1:
+            st.download_button(
+                "📄 국고 템플릿 샘플 엑셀 다운로드",
+                data=_df_to_excel_bytes(tre_sample_df, "treasury_templates"),
+                file_name="국고_템플릿_샘플.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="tre_tpl_sample_xlsx_download",
+            )
+        with c_tre_down2:
+            st.download_button(
+                "📥 현재 템플릿 엑셀 다운로드",
+                data=_df_to_excel_bytes(_build_current_treasury_template_df(), "treasury_templates"),
+                file_name="국고_템플릿_현재내역.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="tre_tpl_current_xlsx_download",
+            )
 
         st.caption("• 샘플 형식: 라벨(내역) | 종류(세입/세출) | 금액 | 순서")
         st.caption("• 엑셀을 올린 뒤, 아래의 **저장** 버튼을 눌러야 실제 반영됩니다.")
@@ -14065,17 +14258,25 @@ def _render_mart_admin_ui():
     
     st.markdown("#### 📥 마트 템플릿 엑셀로 일괄 추가")
     sample = pd.DataFrame([{"내역":"초코파이","금액":60,"순서":1}])
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        sample.to_excel(writer, index=False, sheet_name="mart_templates")
-    st.download_button(
-        "마트 템플릿 샘플 엑셀 다운로드(형식: 내역 | 금액 | 순서)",
-        data=bio.getvalue(),
-        file_name="mart_template_sample.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="mart_tpl_sample_down",
-        use_container_width=True,
-    )
+    c_mart_down1, c_mart_down2 = st.columns(2)
+    with c_mart_down1:
+        st.download_button(
+            "마트 템플릿 샘플 엑셀 다운로드(형식: 내역 | 금액 | 순서)",
+            data=_df_to_excel_bytes(sample, "mart_templates"),
+            file_name="mart_template_sample.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="mart_tpl_sample_down",
+            use_container_width=True,
+        )
+    with c_mart_down2:
+        st.download_button(
+            "📥 현재 템플릿 엑셀 다운로드",
+            data=_df_to_excel_bytes(_build_current_mart_template_df(), "mart_templates"),
+            file_name="mart_template_current.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="mart_tpl_current_down",
+            use_container_width=True,
+        )
 
     up = st.file_uploader("마트 템플릿 엑셀 업로드(.xlsx)", type=["xlsx"], key="mart_tpl_uploader")
     overwrite = st.checkbox("저장 시 기존 마트 템플릿 리스트를 모두 삭제하고 새로 올린 엑셀로 덮어쓰기", key="mart_tpl_overwrite")
