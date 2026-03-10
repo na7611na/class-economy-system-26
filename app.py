@@ -20,7 +20,7 @@ import json
 # =========================
 # 설정
 # =========================
-APP_TITLE = "🏫학급 경제 시스템🪙"
+APP_TITLE = "XXX이 사이트는 폐쇄 되었습니다. XXX 새롭게 큐알 코드를 찍고 들어가세요. XXX"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 KST = timezone(timedelta(hours=9))
